@@ -4,6 +4,7 @@ PicoRX Controller V1
 Cross-platform Python/Tkinter controller for a PicoRX-compatible CAT interface.
 GUI similar to Pi-Pico-RX-Control-Program V100 PicoRX.exe by ON7DQ and ONL12523.
 G3ZBU 17th September 2026.
+Modes: 22nd Sep 2026 by ChatGPT for better formatting of frequency.
 
 Requires:
     Python 3
@@ -27,7 +28,7 @@ from serial.tools import list_ports
 
 
 POLL_MS = 1000
-SERIAL_BAUD = 19200
+SERIAL_BAUD = 9600
 SERIAL_TIMEOUT = 0.25
 
 MODE_VALUES = {
@@ -112,15 +113,12 @@ class PicoRX:
         self._write("MD;")
         reply = self._read_until_semicolon()
 
-        # Expected PicoRX reply: MD followed by P1 then P2, terminated by ;
-        # YAESU P1 is 0 for the main receiver, and P2 is the mode number.
-        # Thus USB, for example, is returned as MD02;
-        # Kenwood MD followed by P1 only. G3ZBU
+        # Expected PicoRX reply: MD followed by the mode number, terminated by ;
+        # For example, USB is returned as MD2;
         if reply.startswith("MD") and reply.endswith(";"):
             payload = reply[2:-1]
-            
-            if payload[0].isdigit():
-                value = int(payload[0])
+            if payload.isdigit():
+                value = int(payload)
                 for name, number in MODE_VALUES.items():
                     if value == number:
                         return name
@@ -136,7 +134,7 @@ class FrequencyDisplay(tk.Canvas):
         self.on_frequency_changed = on_frequency_changed
 
         self.frequency = 0
-        self.digits = 9
+        self.digits = 8
         self.min_frequency = 0
         self.max_frequency = 99_999_999
 
@@ -174,42 +172,85 @@ class FrequencyDisplay(tk.Canvas):
         if h < 50:
             h = 125
 
-        # Cream outline.
         self.create_rectangle(
             2, 2, w - 2, h - 2,
             outline="#f4e6b3",
             width=1,
         )
 
-        text = f"{self.frequency:09d}"
+        # Eight displayed digits: five kHz digits and three decimal digits.
+        # Example: 14,074.000 kHz.  The underlying CAT value is still Hz.
+        integer_part = self.frequency // 1000
+        fractional_part = self.frequency % 1000
+        digits = f"{integer_part:05d}{fractional_part:03d}"
 
-        # Use a large bold Tk font. It scales with the window.
         font_size = max(28, int(h * 0.55))
         font = ("TkFixedFont", font_size, "bold")
 
-        # Measure each digit so the clickable regions correspond to it.
-        # A fixed-width font gives visually consistent digit positions.
-        char_width = max(25, int(w * 0.075))
-        total_width = char_width * self.digits
-        x0 = (w - total_width) / 2
+        # Fixed-width digit cells.  Extra space is deliberately allowed
+        # around the comma and decimal point, and before the kHz suffix.
+        digit_width = max(25, int(w * 0.075))
+        comma_gap = digit_width * 0.18
+        decimal_gap = digit_width * 0.18
+        suffix_gap = digit_width * 0.55
         y_center = h / 2 + 3
 
+        total_width = (
+            5 * digit_width + comma_gap
+            + decimal_gap + 3 * digit_width
+            + suffix_gap + 3 * digit_width
+        )
+        x = (w - total_width) / 2
         self._digit_boxes = []
 
-        for i, digit in enumerate(text):
-            x_left = x0 + i * char_width
-            x_right = x_left + char_width
-
+        # First two integer digits.
+        for i in range(2):
             self.create_text(
-                (x_left + x_right) / 2,
-                y_center,
-                text=digit,
-                fill="#fff6d0",
-                font=font,
-                anchor="center",
+                x + digit_width / 2, y_center,
+                text=digits[i], fill="#fff6d0", font=font, anchor="center"
             )
+            self._digit_boxes.append((x, x + digit_width))
+            x += digit_width
 
-            self._digit_boxes.append((x_left, x_right))
+        # Comma, with a little extra breathing room on both sides.
+        x += comma_gap / 2
+        self.create_text(
+            x, y_center, text=",", fill="#fff6d0", font=font, anchor="center"
+        )
+        x += comma_gap / 2
+
+        # Remaining three integer digits.
+        for i in range(2, 5):
+            self.create_text(
+                x + digit_width / 2, y_center,
+                text=digits[i], fill="#fff6d0", font=font, anchor="center"
+            )
+            self._digit_boxes.append((x, x + digit_width))
+            x += digit_width
+
+        # Decimal point, again with a little extra spacing.
+        x += decimal_gap / 2
+        self.create_text(
+            x, y_center, text=".", fill="#fff6d0", font=font, anchor="center"
+        )
+        x += decimal_gap / 2
+
+        # Three fractional digits. These remain clickable too: they adjust
+        # 100 Hz, 10 Hz and 1 Hz respectively.
+        for i in range(5, 8):
+            self.create_text(
+                x + digit_width / 2, y_center,
+                text=digits[i], fill="#fff6d0", font=font, anchor="center"
+            )
+            self._digit_boxes.append((x, x + digit_width))
+            x += digit_width
+
+        # Clear gap before the unit label.
+        x += suffix_gap
+        self.create_text(
+            x + (3 * digit_width) / 2, y_center,
+            text="kHz", fill="#fff6d0", font=font, anchor="center"
+        )
 
     def _digit_at(self, x):
         for index, (left, right) in enumerate(self._digit_boxes):
@@ -232,9 +273,11 @@ class FrequencyDisplay(tk.Canvas):
         if index is None:
             return
 
-        # Frequency digit positions are powers of ten.
-        power = self.digits - 1 - index
-        step = 10 ** power
+        # The CAT frequency is stored in Hz.  The eight displayed
+        # digits therefore correspond directly to 10,000,000 Hz down
+        # to 1 Hz.  The punctuation is only visual; it does not alter
+        # the digit values or their click increments.
+        step = 10 ** (self.digits - 1 - index)
 
         # Upper half increments; lower half decrements.
         height = max(1, self.winfo_height())
@@ -259,7 +302,7 @@ class PicoRXController(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("SEMARC PicoRX Controller V1")
+        self.title("PicoRX Controller V1")
         self.minsize(850, 430)
         self.geometry("900x470")
 
@@ -284,7 +327,7 @@ class PicoRXController(tk.Tk):
 
         title = ttk.Label(
             outer,
-            text="SEMARC PicoRX Controller",
+            text="PicoRX Controller",
             font=("TkDefaultFont", 16, "bold"),
         )
         title.pack(pady=(0, 10))
@@ -407,7 +450,7 @@ class PicoRXController(tk.Tk):
             self.radio.set_frequency(frequency)
             self.last_frequency = frequency
             self.status_var.set(
-                f"Frequency set to {frequency:,} Hz"
+                f"Frequency set to {frequency/1000:,.3f} kHz"
             )
         except Exception as exc:
             self.status_var.set(f"Serial error: {exc}")
@@ -446,7 +489,7 @@ class PicoRXController(tk.Tk):
 
             if frequency is not None:
                 self.status_var.set(
-                    f"Connected    {frequency:,} Hz    {mode or self.mode_var.get()}"
+                    f"Connected    {frequency/1000:,.3f} kHz    {mode or self.mode_var.get()}"
                 )
 
         except (serial.SerialException, OSError) as exc:
